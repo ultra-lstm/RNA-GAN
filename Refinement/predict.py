@@ -18,31 +18,29 @@ from keras.models import load_model
 sequences_per_batch = 1
 epochs = 100
 image_size = 240
-sequence_length = 140
-sequence_start = 9
-train_seq = 10
+sequence_length = 155
+sequence_start = 0
+train_seq = 1
 train_cnt = int(sequence_length / train_seq)
-file_list = 'train.txt'
+file_list = 'val.txt'
 input_mode = 'test'
 input_data = 4
 input_attention = 3
 input_dimension = input_data + input_attention
 output_dimension = 3
-base = 32
+base = 42
 folder = 'data'
 
 # load data list
 files = np.genfromtxt(file_list, dtype='str')
 
 # define model
-
-# define model
-def conv_block(m, dim, acti, bn, res, do=0):
-    n = TimeDistributed(Conv2D(dim, 5, padding='same'))(m)
+def conv_block(m, dim, acti, bn, res, do=0.2):
+    n = TimeDistributed(Conv2D(dim, 6, padding='same'))(m)
     n = TimeDistributed(LeakyReLU())(n)
     n = BatchNormalization()(n) if bn else n
     n = TimeDistributed(Dropout(do))(n) if do else n
-    n = TimeDistributed(Conv2D(dim, 5, padding='same'))(n)
+    n = TimeDistributed(Conv2D(dim, 6, padding='same'))(n)
     n = TimeDistributed(LeakyReLU())(n)
     n = BatchNormalization()(n) if bn else n
     return Concatenate()([m, n]) if res else n
@@ -51,6 +49,10 @@ def level_block(m, dim, depth, inc, acti, do, bn, mp, up, res):
     if depth > 0:
         n = conv_block(m, dim, acti, bn, res)
         m = TimeDistributed(MaxPooling2D())(n) if mp else TimeDistributed(Conv2D(dim, 4, strides=2, padding='same'))(n)
+        
+        print(n.shape)
+        print(m.shape)
+        
         m = level_block(m, int(inc*dim), depth-1, inc, acti, do, bn, mp, up, res)
         if up:
             m = TimeDistributed(UpSampling2D())(m)
@@ -67,8 +69,8 @@ def level_block(m, dim, depth, inc, acti, do, bn, mp, up, res):
         
         l = TimeDistributed(Flatten())(m)
         #l = LSTM(4 * 4 * 128, stateful=True, return_sequences=True)(l)
-        l = LSTM(2184, stateful=True, return_sequences=True)(l)
-        l = TimeDistributed(Reshape((2, 2, 2184/4)))(l)
+        l = LSTM(2048, stateful=True, return_sequences=True)(l)
+        l = TimeDistributed(Reshape((2, 2, 2048/4)))(l)
         m = l
         #m = Concatenate()([l, m])
         
@@ -79,13 +81,14 @@ def UNet(input_shape, out_ch=1, start_ch=64, depth=7, inc_rate=1.5, activation='
          dropout=0.4, batchnorm=True, maxpool=True, upconv=True, residual=False):
     i = Input(batch_shape=input_shape)
     o = TimeDistributed(ZeroPadding2D(padding=8))(i)
+    o = TimeDistributed(SeparableConv2D(start_ch, 7, padding='same'))(o)
     o = level_block(o, start_ch, depth, inc_rate, activation, dropout, batchnorm, maxpool, upconv, residual)
     o = TimeDistributed(Cropping2D(cropping=8))(o)
     o = TimeDistributed(Conv2D(out_ch, 1, activation='tanh'))(o)
     return Model(inputs=i, outputs=o)
 
 model = UNet((sequences_per_batch, train_seq, image_size, image_size, input_dimension), out_ch=6, start_ch=base)
-model.load_weights('lstm_ff.h5')
+model.load_weights('v2.h5')
 model.compile(loss='mean_squared_error', optimizer=RMSprop())
 
 for k in model.layers:
@@ -93,7 +96,7 @@ for k in model.layers:
 
 plot_model(model, to_file='model.png')
 
-def load_sequence(p, is_train=True):
+def load_sequence(p, is_train=False):
     pattern = p.decode("utf-8")
     val = []
     
@@ -102,6 +105,7 @@ def load_sequence(p, is_train=True):
         try:
             input_img = scipy.misc.imread(name, mode='L').astype(np.float)
         except:
+            val.append(np.zeros((1, image_size, image_size, input_dimension + output_dimension)))
             continue
         images = np.split(input_img, input_dimension + output_dimension, axis=1)
         
@@ -134,11 +138,13 @@ def load_sequence(p, is_train=True):
         
             conv.append(image)
         
+        #print(np.stack(conv, axis=2).shape)
         val.append([np.stack(conv, axis=2)])
 
     st = np.stack(val, axis=1)
-    z = np.zeros((1, sequence_length - st.shape[1], image_size, image_size, input_dimension + output_dimension)) 
-    o = np.append(z, st, axis=1)
+    #z = np.zeros((1, sequence_length - st.shape[1], image_size, image_size, input_dimension + output_dimension)) 
+    #o = np.append(z, st, axis=1)
+    o = st
     o = o - 1
     return o
    
@@ -166,19 +172,33 @@ def extractGT(seq):
     gt = np.concatenate((m1, m2, m3), axis=4)
     return data, gt, np.concatenate((cta, ctb, ctc), axis=4)
     
-def combine(e, g):
+def combine(e, g, p1, q1):
     p, m = np.split(e, 2, axis=4)
-    return np.sign(g + np.sign(p-0.2) - np.sign(m-0.3))
+    return np.sign(g + np.sign(p-p1) - np.sign(m-q1))
     
-def merge(yo, error):
+def merge(yo, error, p, q):
     ae, be, ce = np.split(error, 3, axis=4)
     ag, bg, cg = np.split(yo, 3, axis=4)
     
-    a = combine(ae, ag)
-    b = combine(be, bg)
-    c = combine(ce, cg)
+    a = combine(ae, ag, p, q)
+    b = combine(be, bg, p, q)
+    c = combine(ce, cg, p, q)
     
     return np.concatenate((a, b, c), axis=4)
+    
+def wrt(yo, error, name, p, q, c):
+    out = merge(yo, error, p, q)
+        
+    all = np.append(batch_sequence, out, axis=4)
+    all = all.reshape((train_seq, image_size, image_size, 13))
+    sp = np.split(all, train_seq, axis=0)
+    sp = [s.reshape((image_size, image_size, 13)) for s in sp]
+
+    haa = np.concatenate(sp, axis=0)
+    jaa = np.concatenate(np.split(haa, 13, axis=2), axis=1)
+    fa = (jaa+1.)/2.
+    yo = np.concatenate((fa, fa, fa), axis=2)
+    scipy.misc.imsave(files[sequence].format('out', c, name), yo)
     
 # test
 number_of_sequences = files.size  
@@ -193,18 +213,10 @@ for sequence in range(number_of_sequences):
     for batch_sequence in batch_sequences:
         data, gt, yo = extractGT(batch_sequence)
         error = model.predict_on_batch(data)
-    
-        out = merge(yo, error)
         
-        all = np.append(batch_sequence, out, axis=4)
-        all = all.reshape((train_seq, image_size, image_size, 13))
-        sp = np.split(all, train_seq, axis=0)
-        sp = [s.reshape((image_size, image_size, 13)) for s in sp]
-
-        haa = np.concatenate(sp, axis=0)
-        jaa = np.concatenate(np.split(haa, 13, axis=2), axis=1)
-        fa = (jaa+1.)/2.
-        yo = np.concatenate((fa, fa, fa), axis=2)
-        scipy.misc.imsave('test/val_{0}_{1}.png'.format(sequence, c), yo)
+        wrt(yo, error, 'o1', 0.5, 0.5, c)
+        wrt(yo, error, 'o2', 0.3, 0.8, c)
+        wrt(yo, error, 'o3', 0.8, 0.3, c)
+        
         c = c + 1
     

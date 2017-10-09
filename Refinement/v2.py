@@ -27,19 +27,19 @@ input_data = 4
 input_attention = 3
 input_dimension = input_data + input_attention
 output_dimension = 3
-base = 32
+base = 42
 folder = 'data'
 
 # load data list
 files = np.genfromtxt(file_list, dtype='str')
 
 # define model
-def conv_block(m, dim, acti, bn, res, do=0):
-    n = TimeDistributed(Conv2D(dim, 5, padding='same'))(m)
+def conv_block(m, dim, acti, bn, res, do=0.2):
+    n = TimeDistributed(Conv2D(dim, 6, padding='same'))(m)
     n = TimeDistributed(LeakyReLU())(n)
     n = BatchNormalization()(n) if bn else n
     n = TimeDistributed(Dropout(do))(n) if do else n
-    n = TimeDistributed(Conv2D(dim, 5, padding='same'))(n)
+    n = TimeDistributed(Conv2D(dim, 6, padding='same'))(n)
     n = TimeDistributed(LeakyReLU())(n)
     n = BatchNormalization()(n) if bn else n
     return Concatenate()([m, n]) if res else n
@@ -48,6 +48,10 @@ def level_block(m, dim, depth, inc, acti, do, bn, mp, up, res):
     if depth > 0:
         n = conv_block(m, dim, acti, bn, res)
         m = TimeDistributed(MaxPooling2D())(n) if mp else TimeDistributed(Conv2D(dim, 4, strides=2, padding='same'))(n)
+        
+        print(n.shape)
+        print(m.shape)
+        
         m = level_block(m, int(inc*dim), depth-1, inc, acti, do, bn, mp, up, res)
         if up:
             m = TimeDistributed(UpSampling2D())(m)
@@ -64,8 +68,8 @@ def level_block(m, dim, depth, inc, acti, do, bn, mp, up, res):
         
         l = TimeDistributed(Flatten())(m)
         #l = LSTM(4 * 4 * 128, stateful=True, return_sequences=True)(l)
-        l = LSTM(2184, stateful=True, return_sequences=True)(l)
-        l = TimeDistributed(Reshape((2, 2, 2184/4)))(l)
+        l = LSTM(2048, stateful=True, return_sequences=True)(l)
+        l = TimeDistributed(Reshape((2, 2, 2048/4)))(l)
         m = l
         #m = Concatenate()([l, m])
         
@@ -76,6 +80,7 @@ def UNet(input_shape, out_ch=1, start_ch=64, depth=7, inc_rate=1.5, activation='
          dropout=0.4, batchnorm=True, maxpool=True, upconv=True, residual=False):
     i = Input(batch_shape=input_shape)
     o = TimeDistributed(ZeroPadding2D(padding=8))(i)
+    o = TimeDistributed(SeparableConv2D(start_ch, 7, padding='same'))(o)
     o = level_block(o, start_ch, depth, inc_rate, activation, dropout, batchnorm, maxpool, upconv, residual)
     o = TimeDistributed(Cropping2D(cropping=8))(o)
     o = TimeDistributed(Conv2D(out_ch, 1, activation='tanh'))(o)
@@ -94,7 +99,7 @@ def load_sequence(p, is_train=True):
     val = []
     
     for s in xrange(sequence_length):
-        name = pattern.format('test', sequence_start + s, folder)
+        name = pattern.format('test', int(np.ceil(np.random.uniform(3, sequence_start))) + s, folder)
         try:
             input_img = scipy.misc.imread(name, mode='L').astype(np.float)
         except:
@@ -199,8 +204,8 @@ for epoch in range(epochs):
         jaa = np.concatenate(np.split(haa, input_dimension + output_dimension + 6 + 6, axis=2), axis=1)
         fa = (jaa+1.)/2.
         yo = np.concatenate((fa, fa, fa), axis=2)
-        scipy.misc.imsave('out4/val_{0}_{1}.png'.format(epoch, c), yo)
+        scipy.misc.imsave('outv2/val_{0}_{1}.png'.format(epoch, c), yo)
         c = c + 1
     
-    model.save('lstm_ff.h5')
+    model.save('v2.h5')
     
